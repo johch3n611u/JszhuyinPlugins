@@ -1,0 +1,29 @@
+# ── dependencies ────────────────────────────────────────────────
+node_modules/
+
+# ── build output / packaged artifacts ───────────────────────────
+_pkg/
+*.vsix
+
+# ── Copy-Item -Recurse 產生的重複層（內容與上層完全相同） ────────
+# build.ps1 用 Copy-Item -Recurse 複製 shared/lib、shared/data，
+# 重複執行會在內部再長出一層 lib/lib、data/data，無任何程式引用。
+**/lib/lib/
+**/data/data/
+
+# ── runtime state / logs ────────────────────────────────────────
+*.log
+relay-latency.csv
+*.tmp
+
+# ── local environment / secrets ─────────────────────────────────
+.env
+.env.*
+*.local
+
+# ── editor / OS ─────────────────────────────────────────────────
+.vscode/*
+!.vscode/launch.json
+Thumbs.db
+Desktop.ini
+.DS_Store

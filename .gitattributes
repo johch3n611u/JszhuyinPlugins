@@ -1,0 +1,11 @@
+# Normalize line endings by content; keep working tree as-is.
+* text=auto
+
+# Dictionaries are packed binary — never normalize.
+*.data binary
+*.vsix binary
+
+# Windows scripts must keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
