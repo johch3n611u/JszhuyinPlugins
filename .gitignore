@@ -1,4 +1,4 @@
-# ── dependencies ────────────────────────────────────────────────
+﻿# ── dependencies ────────────────────────────────────────────────
 node_modules/
 
 # ── build output / packaged artifacts ───────────────────────────
@@ -27,3 +27,7 @@ relay-latency.csv
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+#example
+
+qingjian-main/
