@@ -1,384 +1,757 @@
-# Feature TODOLIST — 青簡英文能力融入 JszhuyinPlugins desktop
+# 浮動注音小工具 — 英文查字典功能計劃
 
-**分析日期**：2026-10-08  
-**參考文件**：`青简英文查字典分析.md`  
-**目標**：把 qingjian-main 的英文查字典能力融入浮動注音小工具，對「學習英文」幫助最大。
+> 本文件由《青简英文查字典分析.md》與原《Feature TODOLIST》合併而成，兩份原始檔可刪除。
+>
+> **最後更新**：2026-10-17
+> **參考實作**：`desktop/example/qingjian-main`（青简，GPL-3.0-or-later）
+> **目標**：把青简的英文查字典能力融入浮動注音小工具，對「學習英文」幫助最大。
 
 ---
 
-## 分析結論
+## 目錄
 
-### 使用情境約束
+- [1. 專案背景](#1-專案背景)
+- [2. 青简英文能力參考分析](#2-青简英文能力參考分析)
+- [3. 資料資產盤點（實測）](#3-資料資產盤點實測)
+- [4. 功能計劃](#4-功能計劃)
+- [5. 已知缺陷與設計約束](#5-已知缺陷與設計約束)
+- [6. 明確不建議做的](#6-明確不建議做的)
+- [7. 實作順序](#7-實作順序)
+- [8. 接入點總覽](#8-接入點總覽)
+- [9. 參考檔案索引](#9-參考檔案索引)
 
-目前已經有在使用要保護目前使用不能有問題在改, 例如複製在階層資料夾改完測試完在換
+---
 
-桌面工具的核心用途是**打中文**（Windows LTSC 無法裝系統注音），英文是次要模式（右 Shift 切 OFF）。工作流：
+## 1. 專案背景
+
+### 1.1 工具定位與工作流
+
+`desktop/` 是 Electron 32 + 純 JS（無框架）的浮動輸入小工具。核心用途是**打中文**——使用者機器是 Windows 10 Enterprise LTSC 2019，裝不了系統注音。
 
 ```
-打注音 → 中文候選 → 選字 → textarea → 失焦自動複製 → 貼到別處
+打注音 → 中文候選 → 選字 → textarea → 視窗失焦自動複製 → 貼到別處
 ```
 
-英文學習功能必須：
-1. **不干擾中文輸入流程**（主要用途）
-2. **在現有 UI 內運作**（不新增面板，不改窗口結構）
-3. **創造英文曝光機會**（被動 + 主動）
+英文是次要模式：右 Shift 切 OFF，字母直通 textarea。
 
-### 青簡兩條資料線的學習價值對比
+### 1.2 硬性約束（故意的，別當 bug 改）
 
-| 線 | 資料 | 學習類型 | 使用情境 | 學習收益評估 |
-|---|---|---|---|---|
-| **線B**（glossary-en） | 中→英釋義 | 被動曝光 | 打中文候選右側顯示英文譯詞 | 每次打中文都接觸英文，但用戶注意力在選中文詞，英文可能被忽略 |
-| **線A**（english.tsv + glossary-zh） | 英文詞表 + 英→中釋義 | 主動練習 | 注音 OFF 時打英文，出候選+中文釋義 | 用戶刻意打英文時的學習時刻，注意力集中 |
+1. **完全離線、免安裝、不需管理員權限**
+2. **不干擾中文輸入流程**（主要用途）
+3. **在現有 UI 內運作**（不新增面板，不改窗口結構）
+4. 視窗寬 **320px**（`main.js:19`），標題列 `注音 IME` + `注音 ON` + `已複製 ✓` + ⚙ 已佔滿
+5. 詞庫由主程序 IPC 提供（繞 `file://` CORS）
 
-**關鍵洞察**：線A（主動練習）的學習收益**高於**線B（被動曝光）。因為：
-- 打英文時用戶在主動回憶拼寫，這正是記憶形成的時刻
-- 中文釋義幫助建立「拼寫 ↔ 詞義」關聯
-- 被動曝光（線B）在用戶注意力在別處時效果打折
+### 1.3 現有程式碼關鍵事實
 
-但線B仍有價值：**不改工作流**的前提下創造英文接觸機會，成本極低（Map 查表）。
-
-### 最高學習收益的融入點
-
-**擴展 flashCopied**：選中文詞後，不只閃「已複製 ✓」，改為閃「开发 → development」。
-
-理由：
-- 不改工作流，只改提示文字
-- 每次打中文都是一次微學習時刻（1.4 秒的英文接觸）
-- 用戶已經習慣看這個 flash 位置，改內容比新增 UI 更自然
-- 可以記錄到個人學習日誌（見 P1）
+| 位置 | 事實 |
+|---|---|
+| `renderer/ime.js:431` | `if (!imeEnabled) return;` — 注音 OFF 時**完全不攔截**，字母直通 textarea |
+| `renderer/ime.js:518` | `flashCopied()` 無參數，寫死 1400ms，只 `classList.add('show')` |
+| `renderer/index.html:175` | `<span class="copy-flash">已複製 ✓</span>` 靜態文字，`white-space: nowrap` |
+| `renderer/ime.js:541` | `onCompositionEnd()` 呼叫 `flashCopied()` |
+| `preload.js:53` / `main.js:389` | preload 監聽 `copied:ok`，main 只註冊 `copied:notify` — **全專案無人送 `copied:ok`，此路徑是死的** |
+| `renderer/ime.js:252` | 失焦自動送出：`if (imeEnabled && client && client.compositionActive && client.candidates[0])` |
+| `renderer/ime.js:19` | `PAGE_SIZE = 9` |
+| `renderer/ime.js:29` | `autoHideOnCommit` 預設 `false`（複製後預設不自動隱藏） |
+| `main.js:293` | 視窗可縮到 200×80 |
 
 ---
 
-## 優先序
+## 2. 青简英文能力參考分析
 
-### P0 — 核心學習迴圈（高收益，符合現有 UI）
+### 2.1 兩條獨立的資料線
 
-#### P0-1：英文模式候選 + 中文釋義（線A + glossary-zh）
+青简的「英文查字典」不是單一功能，是**兩條互不相干的資料線**：
 
-**學習價值**：主動練習路徑。注音 OFF 時打英文出候選 + 中文釋義，幫助拼寫正確 + 詞義關聯。
+| 線 | 資料 | 作用 | 階段 |
+|---|---|---|---|
+| **A. 英文詞表** | `english.tsv` | 打英文字母出英文**候選** | `Engine::query()` |
+| **B. 釋義表** | `glossary-en.tsv` / `glossary-zh.tsv` | 候選**右側那行譯詞** | `Engine::annotate()` |
 
-**實作**：
-- 移植 qingjian 的 `WordList` 到 JS（Map + 排序陣列 + 二分搜尋）
-- 移植 `suggest()` 三段式（精確命中 → 前綴補全 → 拼錯糾正）
-- 移植 `within_one_edit()`（拼錯糾正，≥4 字母才觸發）
-- 移植 `adapt_case()`（大小寫跟隨輸入）
-- 載入 `glossary-zh.tsv` 建 Map，候選右側顯示中文釋義
+分離是有意的：釋義表可換語言、可關閉、可雲端兜底，都不影響候選管線；查不到就留空。
 
-**資料**：
-- `english.tsv`：94,568 詞，2.2MB（詞\t編碼\tZipf頻率）
-- `glossary-zh.tsv`：44,924 詞，~1MB（英→中釋義）
+### 2.2 線 A：英文詞表
 
-**接入點**：
-- `renderer/ime.js`：`handleKeyDown` 的 `!imeEnabled` 分支 → 改為攔截字母鍵，走英文候選管線
-- `renderCandidates()`：英文候選渲染，右側加中文釋義
-- `main.js`：新增 `english:load` IPC（載入 english.tsv + glossary-zh.tsv）
-- `preload.js`：新增 `loadEnglish()` API
+#### 資料流水線
 
-**UI 設計**：
-- 英文候選與中文候選共用同一個 candidates div
-- 每個候選項：`[序號] word  中文釋義`
-- 釋義用較小字級、較淺顏色，不搶主詞焦點
-- PAGE_SIZE=9 不變
+```
+05_english/00_all_words.tsv (ESDB/CSpell，114,876 詞形)
+05_english/07_display_forms.tsv (Windows/GitHub/VSCode 大小寫修正)
+        ↓  qingjian-dict-convert english   ← 同檔內先到先得，後檔覆蓋前檔但位置不動
+assets/lexicon/english.tsv   詞\t編碼\t詞頻
+```
 
-**常數**（借鑑青簡）：
-- `MIN_COMPLETION_LETTERS = 3`：至少 3 字母才出前綴補全
-- `MIN_CORRECTION_LETTERS = 4`：至少 4 字母才做拼錯糾正
-- `ENGLISH_MODE_CANDIDATES = 18`：英文模式最多候選數（可依 UI 調整，9 也夠）
+最終格式（94,568 詞，2.2MB）：
+
+```tsv
+a	a	7360
+iPhone	iphone	800
+```
+
+第三欄是 wordfreq 的 Zipf 頻率 × 1000。
+
+#### 資料結構 `WordList`
+
+不是 trie，是 **HashMap + 排序陣列**（`crates/qingjian-dictionary/src/word_list.rs`）：
+
+```rust
+by_code: HashMap<String, usize>,        // 小寫編碼 → 下標，O(1) 精確查
+entries: Vec<(String, String, u32)>,    // (編碼, 原樣詞, 詞頻)，按編碼排序
+```
+
+| 方法 | 實作 |
+|---|---|
+| `get(code)` | HashMap 直查 |
+| `complete(prefix, limit)` | `partition_point` 二分定位 → `take_while` 掃前綴區間 → 按詞頻降序取前 N |
+| `entries()` | 全掃 iterator，供拼錯糾正（要算編輯距離，索引用不上） |
+
+**重要**：編碼欄（第二欄）才是小寫查詢鍵，顯示詞（第一欄）可能不同。`english.tsv` 有 **11,229 行（11.87%）** 顯示詞 ≠ 編碼（`African→african`、`AIDS→aids`）。**建 Map 必須用第二欄**。
+
+#### 三條查詢路徑
+
+**① 英文模式**（Caps Lock 亮）→ `english::suggest()`
+
+三段式嚴格依序：精確命中 → 前綴補全（多表合併排序）→ 拼錯糾正（僅 ≥4 字母且純字母）。
+
+排序鍵：`使用者選過次數` → `詞表詞頻` → `編碼字典序`。
+大小寫跟著敲的走：`Comp`→Company，`COMP`→COMPANY，但 `iphone`→iPhone 照詞表。
+
+**② 中英混輸整詞**（`agent`）→ `extras::insert_english()`
+
+四條規則疊加決定候選位置：拼音不像話 / 不壓過使用者學習記錄 / 兩字母全大寫縮寫（`mp`→MP）讓中文先 / 例外只管沒選過的詞。
+
+**③ 拼音頭 + 英文尾**（`woxiangxuehaorust` → 我想学好 + rust）→ `english_tail::split_english_tail()`
+
+從長到短試尾段，多重條件同時滿足才切；切完還要比分決定誰排前面：
+
+```
+mixed  = (頭段 static_score − penalty) + tail_log_prob − 3.0
+plain  = 整段按拼音讀的 static_score − penalty
+```
+
+**比分刻意排除個人 n-gram 與用戶加分**——原碼註解寫得很白：
+
+> `woxiangxuexirust` 上實測頭段拿 +6.9、整段拿 +21.2，個人模型越肥差距越大——用戶打得越多混輸越打不出來。這是「哪種輸入方式」的判斷，本來也該由靜態模型定，不歸個人頻次管。
+
+#### 拼錯修正 `within_one_edit`
+
+非 Levenshtein DP，四種情形手寫判斷：等長（最多一個位置不同，或恰好相鄰兩位對調）、差一（去掉一個字元後相等）、其餘否。
+
+### 2.3 線 B：釋義表
+
+格式 `词\t[词性. ]译文[\t[词性. ]译文][|读音]`，最多 2 條義項，`#` 為註解。**任一行缺詞或缺釋義，整張表載入失敗**。
+
+| 檔案 | 條目 | 方向 | 鍵的字集 |
+|---|---|---|---|
+| `glossary-en.tsv` | 232,213 | 中 → 英 | **簡體** |
+| `glossary-zh.tsv` | 44,924 | 英 → 中 | 英文詞（值是簡體中文） |
+| `glossary-ja.tsv` | — | 中 → 日 | 簡體，值可帶假名讀音 |
+| `glossary-es.tsv` | — | 中 → 西 | 簡體 |
+
+多欄記錄：`glossary-en` 有 **9,872 條**三欄，`glossary-zh` 有 **3,822 條（8.5%）**多義。**只取第二欄會丟義項**。
+
+三層結構：個人表（`user-glossary-en.tsv`，雲端兜底寫入、可手改）→ 查不到才查隨包表（`.qj` mmap）。
+
+`Translator` trait 明文約束：`translate()` **不能做網路請求**，必須是查表級開銷。網路兜底走另一個 trait（`GlossFiller`），結果非同步寫回個人表。
+
+### 2.4 可借鑑的設計原則
+
+1. **策略判斷用靜態模型，不歸個人頻次管**
+2. **釋義查不到留空，不影響主流程** — 不拋錯、不阻塞、不改排序
+3. **個人詞表排除在「整段是英文詞」判定外** — 防止「越打不出來學得越多」的死循環
 
 ---
 
-#### P0-2：中文候選掛英文譯詞（線B）
+## 3. 資料資產盤點（實測）
 
-**學習價值**：被動曝光。打注音選中文詞時候選右側顯示英文譯詞。
+### 3.1 工具詞庫的字集
+
+`data/database.data` 經解析 UTF-16 碼流（`jszhuyin_data_pack.js` 以 `Uint16` 存字串）：
+
+- **繁體中文**，149,358 個詞（1–4 字）
+- 實測：`開發` 在、`开发` 不在；`時間` 在、`时间` 不在
+
+### 3.2 繁簡錯配 —— 這是 P0-2 的核心問題
+
+`glossary-en.tsv` 是**簡體鍵**。直接查：
+
+| | 覆蓋率 |
+|---|---|
+| 不轉換 | 27,709 / 149,358 = **18.6%** |
+
+漏掉的正好是最需要翻譯的常用詞：`開發`、`時間`、`問題`、`電腦`、`國家` 全部不命中。
+
+### 3.3 解法：OpenCC `tw2sp` 鏈
+
+OpenCC 1.4.2 的 `tw2sp` 是**台灣繁體 → 通用繁體 → 簡體**兩階段鏈（見 `opencc-v1.4.2-resources/tw2sp.json`）：
+
+```
+階段1（group, short_circuit）：TWPhrasesRev → TWVariantsRevPhrases → TWVariantsRev
+階段2（group, short_circuit）：TSPhrases → TSCharactersExt → TSCharacters
+```
+
+詞典規模：`TWPhrasesRev` 810、`TWVariantsRevPhrases` 1,128、`TSPhrases` 477、`TSCharactersExt` 895、**`TSCharacters` 4,148**。
+
+關鍵是 `TWPhrasesRev.txt` 專門處理**詞彙差異**（台灣用語 ↔ 大陸用語）：
+
+```
+程式 → 程序          程式碼 → 代碼
+中介軟體 → 中間件     乙太網路 → 以太网
+```
+
+### 3.4 實測覆蓋率
+
+| 方案 | 覆蓋率 |
+|---|---|
+| 不轉換 | 27,709 = 18.6% |
+| 自製 520 組字級映射 | 41,262 = 27.6% |
+| **OpenCC `tw2sp` 完整鏈** | **65,453 = 43.8%** |
+
+先前失敗的樣本全部救回，且用正確的大陸用詞：
+
+```
+軟體 → 软件 n. software        螢幕 → 屏幕 n. screen
+我們 → 我们 pron. we           程式 → 程序 n. program
+網路 → 网络 n. network         資料 → 数据 n. data
+軟體工程師 → 软件工程师 n. software engineer   ← 詞級轉換也生效
+```
+
+### 3.5 關鍵：43.8% 是被分母污染的假數字
+
+按青简 `dict.tsv` 詞頻分層：
+
+| 詞頻層 | 詞數 | 命中 | 覆蓋率 |
+|---|---|---|---|
+| 100萬+ | 12 | 12 | **100%** |
+| 10萬+ | 257 | 248 | **96.5%** |
+| 1萬+ | 2,908 | 2,840 | **97.7%** |
+| 1千+ | 10,932 | 10,745 | **98.3%** |
+| 100+ | 22,071 | 21,791 | **98.7%** |
+| 10+ | 15,819 | 15,366 | **97.1%** |
+| **無詞頻** | **97,359** | 14,451 | **14.8%** |
+
+整體 43.8% 之所以低，是分母塞了 97,359 個「無詞頻」詞。抽樣檢視未命中的那批：
+
+- 罕見複合詞 / 動詞短語：`扔回來`、`降成`、`夾些`、`跑上去`、`拜候`
+- 罕見名詞：`赤帶`、`心耳`、`黃牛皮`、`諫書`、`霜鬢`
+- 專有名詞：`長江三峽`、`鈴木一朗`、`左宗棠雞`、`明志工專`
+
+**沒有常見詞混在裡面。**唯一漏掉的高頻詞是虛詞——`吧`、`嗎`、`個`、`啦`、`把`、`了`、`好嗎`——`glossary-en` 本來就不該收，翻成英文沒意義。
+
+**結論：有詞頻段覆蓋率 97–100%，P0-2 / P0-3 可行。**
+
+### 3.5b 兩輪獨立驗證（含反駁與收斂）
+
+初版數字經第二模型攻擊後覆核，結論如下：
+
+| 項目 | 初版 | 覆核 | 判定 |
+|---|---|---|---|
+| 整體覆蓋率 | 43.8%（貪婪最長匹配） | 44.59%（含 mmseg 分段的 chain） | **兩者一致**，差 0.8pp 屬實作差異 |
+| Top100 覆蓋率 | 93.0% | 93.0%（獨立重跑） | **完全吻合** |
+| Top12 覆蓋率 | 100% | 83.33%（對方用不同排序源） | **以本文件為準**——本方 Top100 與對方完全一致，Top12 差異來自排序 tie-break，非實質分歧 |
+| 單一資料集保留記憶體 | 67.7MB（**高估**） | 29.72MB 全表 / 9.35MB TW 表 | **採用覆核值** |
+
+**台灣專屬詞彙實測**（這是初版沒驗的關鍵缺口）：
+
+| 結果 | 詞 |
+|---|---|
+| ✓ 命中且轉換正確 | `捷運→捷运 n. MRT`、`便當→便当 n. boxed lunch`、`機車→机车 n. motorcycle`、`腳踏車→自行车 n. bicycle`、`軟體→软件`、`列印→打印 v. print`、`滑鼠→鼠标 n. mouse`、`計程車→出租车 n. taxi`、`資料庫→数据库`、`螢幕→屏幕`、`珍珠奶茶 n. bubble tea`、`鳳梨酥 n. pineapple cake`、`夜市 n. night market` |
+| ✗ 未命中 | `悠遊卡`、`超商`、`戶口名簿`、`便當店`、`麵線`、`滷肉飯`、`手搖飲` |
+
+**命中 29/36 = 81%**。未命中的全是**台灣專屬的飲食與機構詞，沒有對應的大陸用詞**——這是 `TWPhrasesRev` 無法處理的類型，屬真實但有界的缺口。
+
+補充資料：工具詞庫詞長分佈 — 1 字 14,318、2 字 74,601、3 字 33,541、4 字 26,564。雙字詞佔 50%，是轉換的主力。
+
+### 3.6 生產流程：離線預轉換
+
+| | 做法 | 代價 |
+|---|---|---|
+| ❌ runtime 轉換 | 打包 OpenCC 資料 + JS 實作 mmseg 分詞與 short-circuit group 匹配 | 演算複雜、每次渲染都要轉、多 1.2MB 資料依賴 |
+| ✅ **離線預轉** | build 時 `tw2sp(工具詞庫詞)` → 對 `glossary-en.tsv` → 產 `glossary-en-TW.tsv` | 一次跑完，執行期純 `Map.get()`，零轉換成本 |
+
+輸出約 65,453 筆、1–1.5 MB，放 `desktop/data/` 與 `database.data` 並列。**執行期不載入 OpenCC。**
+
+### 3.7 原始資產清單
+
+| 檔案 | 條目 | 大小 | 用途 |
+|---|---|---|---|
+| `qingjian-main/assets/lexicon/english.tsv` | 94,568 | 2.2M | P0-1 英文詞表 |
+| `qingjian-main/assets/glossary/glossary-zh.tsv` | 44,924 | 960K | P0-1 英→中釋義 |
+| `qingjian-main/assets/glossary/glossary-en.tsv` | 232,213 | 6.3M | P0-2/P0-3 中→英釋義（**簡體鍵，需轉換**） |
+| `qingjian-main/assets/levels/levels-en.tsv` | 8,845 | 100K | P1-4 CEFR 等級 |
+| `qingjian-main/assets/lexicon/dict.tsv` | 92,827 | 1.9M | 僅 build 時取詞頻，不進執行期 |
+| `opencc-v1.4.2-resources/` | — | 1.3M | 僅 build 時轉換用，不進執行期 |
+| **自產 `glossary-en-TW.tsv`** | ~65,453 | ~1.5M | P0-2/P0-3 執行期資料 |
+
+---
+
+## 4. 功能計劃
+
+### 學習價值評估
+
+| 線 | 學習類型 | 使用情境 | 評估 |
+|---|---|---|---|
+| **線A**（english.tsv + glossary-zh） | 主動練習 | 注音 OFF 打英文，出候選 + 中文釋義 | 使用者主動回憶拼寫，正是記憶形成時刻 |
+| **線B**（glossary-en-TW） | 被動曝光 | 打中文候選右側顯示英文譯詞 | 不改工作流即創造接觸機會，成本極低 |
+
+兩者都要做，線A 先做（資料面無障礙）。
+
+### P0-1：英文模式候選 + 中文釋義（線A）
+
+**學習價值**：主動練習路徑。
+
+**資料**：`english.tsv`（94,568）+ `glossary-zh.tsv`（44,924，是 `english.tsv` 的子集，**英文詞 Top2000 覆蓋率 100%**）。
 
 **實作**：
-- 載入 `glossary-en.tsv` 建 Map（中→英釋義）
-- `renderCandidates()` 時對每個中文候選查表，右側顯示英文
-- 查不到留空，不影響主流程
 
-**資料**：
-- `glossary-en.tsv`：232,213 詞，6.5MB（中→英釋義，含詞性標註）
+1. 移植 `WordList` 到 JS — Map + 排序陣列 + 二分
+2. 移植 `suggest()` 三段式、`within_one_edit()`、`adapt_case()`
+3. **建 Map 必須用 `english.tsv` 第二欄（編碼），不是第一欄** — 第一欄有 11.87% 與編碼不同
+4. `glossary-zh.tsv` 多欄（3,822 條多義）：初版取第一條，後續可輪替
 
-**UI 設計**：
-- **只在第一個（選中的）候選顯示英文譯詞**，避免 9 候選都加英文導致變寬
-- 格式：`[1] 开发  development`
-- 其他候選維持現狀（只有中文）
+**⚠️ 必須先解決的架構問題**（見 [5.1](#51-off-英文模式沒有獨立輸入狀態機)）：`handleKeyDown` 的 `!imeEnabled` 分支改成攔截字母會破壞唯一的英文直通路徑，且現有候選操作全部讀 `client.candidates`，英文候選不進 `client` 就選不到、翻不了頁、會被 `renderAll()` 清掉。
 
-**接入點**：
-- `renderer/ime.js`：`renderCandidates()` 查 `glossaryEnMap`
-- `main.js`：新增 `glossaryEn:load` IPC
-- `preload.js`：新增 `loadGlossaryEn()` API
+**UI**：英文候選與中文候選共用 `candidates` div，格式 `[序號] word  中文釋義`，釋義用較小字級較淺色。
+
+**常數**：`MIN_COMPLETION_LETTERS = 3`、`MIN_CORRECTION_LETTERS = 4`。
+
+**性能**（第二輪審查修正）：
+
+實際規模是 `english.tsv` 94,568 + `glossary-zh.tsv` 44,924 = **139,492 筆**，不是原本寫的 94k。
+
+三個階段的成本不同，補救方式也不同，**不能一律說「走二分」**：
+
+| 階段 | 成本來源 | 能不能二分 | 正確補救 |
+|---|---|---|---|
+| 精確命中 | HashMap 直查 | 已是 O(1) | 不需處理 |
+| 前綴補全 | **收集全部 `starts_with` 命中 → 排序 → 取前 N**。短前綴會造成大量分配與 `O(n log n)` 排序 | **可以** | 另建**排序陣列索引** + `partition_point` 二分定位，再按詞頻取前 N |
+| 拼錯糾正 | `entries().filter(within_one_edit(...))` —— 本質是全表比對 | **不行** | 編輯距離不具單調性，二分無法排除任何候選。只能：① 依長度分桶（差 1 字元只比相鄰桶）② 提前距離淘汰 ③ 預建 edit-1 索引 ④ 設字元數下限 ⑤ 移到 Web Worker |
+
+補充：JS `Map` **沒有鍵排序**，無法直接二分。補全若要走二分，必須額外建排序索引（`Array` + 二分搜尋），會增加記憶體與載入成本。
+
+`MIN_COMPLETION_LETTERS` / `MIN_CORRECTION_LETTERS` 只降低**觸發頻率**，不降低**每次觸發的掃描成本**。
+
+> 10–38ms 這個量級是從 Node 端推估，**未在 renderer 實測**。動工後第一件事應該是實測，再決定要不要上 Worker。
+
+### P0-2：中文候選掛英文譯詞（線B）✅ 已改判為可行
+
+**學習價值**：被動曝光。打注音選中文時候選右側顯示英文譯詞。
+
+> **判決變更記錄**
+> 2026-10-08 初版判「被繁簡錯配阻塞，降級到 P2」。
+> 2026-10-17 改判「可行，維持 P0」——引入 OpenCC `tw2sp` 後，有詞頻段覆蓋率達 97–100%，見 [3.4–3.5](#35-關鍵438-是被分母污染的假數字)。
+> 初版判斷錯在只推得出 520 組手寫字映射，誤判「詞彙差異永遠修不掉」。
+
+**資料**：自產 `glossary-en-TW.tsv`（~65,453 筆，`繁體\t英文`），離線由 `tw2sp` 轉換產生。
+
+**實作**：
+
+1. build 腳本：取工具詞庫繁體詞 → `tw2sp` → 對 `glossary-en.tsv` → 寫 `glossary-en-TW.tsv`
+2. 執行期載入建 Map（純查表，無 OpenCC 依賴）
+3. `renderCandidates()` 查表，**只在第一個（選中的）候選顯示英文譯詞**，避免 9 候選都加英文導致變寬
+
+**UI**：`[1] 开发  development`，其他候選維持現狀。
 
 **注意**：
-- glossary-en.tsv 6.5MB，renderer 啟動時解析一次，之後 Map.get() 快
-- 詞性標註（`v. develop`）可選擇性顯示或隱藏，初版可先不顯示詞性，只顯示譯詞
+- `glossary-en` 有 9,872 條三欄，多義取捨需定規則（初版取第一條）
+- 一對多歧義是真實風險：`頭髮→头发` 會和「開發」的「发」混淆；build 時要單獨統計這類錯誤率
+- 我的 `tw2sp` 實作是貪婪最長匹配，非 OpenCC 的 mmseg 分詞。**正式 build 建議直接呼叫 OpenCC CLI 核對**
+- **有界的缺口**：台灣專屬飲食與機構詞（`悠遊卡`、`超商`、`麵線`、`滷肉飯`）沒有對應大陸用詞，`TWPhrasesRev` 處理不了。實測這類命中率 81%，缺口集中在特定類別而非散佈全域。若日後要補，用 LLM 對「無命中且無詞頻」的子集做一次即可，不必全量重跑
+
+### P0-3：送出時閃示英文翻譯（擴展 flashCopied）
+
+**學習價值**：微學習時刻。使用者剛打出「开发」，腦中還是中文概念，此刻顯示「development」建立即時連結。
+
+**實作**：
+
+1. `flashCopied(text?)` 改簽名 — **必須顯式寫 `elFlash.textContent = ...`**，目前函式只有 `classList.add('show')`，不更新文字
+2. `onCompositionEnd()` 查 `glossaryEnTwMap` 傳入
+3. 無譯詞時維持 `已複製 ✓`
+
+**⚠️ 兩個必須先解決的問題**：
+
+- **UI 裝不下**：320px 標題列塞 `已複製 ✓  开发 → development` 必溢出。`.copy-flash` 是 `white-space: nowrap`，無省略號無換行。`main.js:293` 還允許縮到 200px。
+- **觸發時機錯誤**：`jszhuyin.js:1210 confirmCandidate` 會呼叫 `endComposition`，若 `symbols` 未盡再 `query`。所以 `onCompositionEnd()` 是**每次選字觸發**，不是整詞完成。`nihaoma` 分三次選就會閃三次，詞彙日誌也會重複記錄。
+
+### P1-4：CEFR 詞彙等級標示
+
+**學習價值**：幫助學習者判斷詞彙難度是否適合自己。
+
+**資料**：`levels-en.tsv`，8,845 詞，與 `english.tsv` 命中 8,470。
+
+**覆蓋率評估（已修正）**：整體只佔 `english.tsv` 的 8.96%，但候選不是隨機抽樣——`suggest()` 按 Zipf 排序，實測：
+
+| 候選層級 | CEFR 覆蓋率 |
+|---|---|
+| Top100 | **99%** |
+| Top1000 | **80.5%** |
+| Top2000 | **74.1%** |
+
+**修正記錄**：初版評估「絕大多數候選看不到標籤」是錯的。常用詞的前幾個候選大概率有標籤，無標籤的主要是長尾詞、专名、技術詞與拼錯糾正結果。
+
+**UI**：`[1] development [B2]  發展`。A1/A2 綠、B1/B2 藍、C1/C2 紫，無等級不顯示。
+
+### P1-5：個人學習日誌（無 UI）
+
+JSON 落盤至 `%APPDATA%/floating-zhuyin/vocab-log.json`，記錄兩類事件：英文模式 commit、中文 commit 時的英文曝光。
+
+**注意**：靜默記錄不顯示 UI；只留最近 90 天；**且要處理 `onCompositionEnd` 按字觸發的重複記錄問題**。
+
+### P2-6：設定面板加詞彙統計
+
+依 P1-5 資料做可視化。簡單數字 + 分佈條，不引圖表庫。
+
+### P2-7：中英混輸
+
+便利性 > 學習價值。右 Shift 已能處理模式切換，且混輸邊界情況多。**延後。**
 
 ---
 
-#### P0-3：送出時閃示英文翻譯（擴展 flashCopied）
+## 5. 已知缺陷與設計約束
 
-**學習價值**：微學習時刻。把每次打中文變成一次英文接觸，不改工作流。
+以下經外部審查（Codex）與人工查證確認，P0 動工前必須解決。
 
-**實作**：
-- `onCompositionEnd()` 或 `selectAndCommit()` 時，查 glossary-en 得到中文詞的英文譯詞
-- 修改 `flashCopied()` 顯示內容：
-  - 有英文譯詞：`已複製 ✓  开发 → development`
-  - 無英文譯詞：`已複製 ✓`（維持現狀）
-- 時間：1.4 秒（現有 flashCopied 時間）或可延長至 2 秒讓用戶看清楚
+### 5.1 OFF 英文模式沒有獨立輸入狀態機
 
-**學習原理**：
-- 用戶剛打出「开发」，腦中還是中文概念
-- 此刻顯示「development」，建立即時的「中文概念 ↔ 英文詞」連結
-- 每次打中文都重複一次，形成間隔重複效果
+**這是最危險的一項。**計劃目前只描述「怎麼顯示候選」，沒描述候選怎麼存在、提交、翻頁、失焦怎麼辦。
 
-**接入點**：
-- `renderer/ime.js`：`onCompositionEnd()` 查 glossaryEnMap → 傳入 flashCopied()
-- 或 `selectAndCommit()` 時查表
+| 問題 | 現況 |
+|---|---|
+| 攔截後按鍵語義 | 無候選時是否穿透？`Space`/`Enter`/`Backspace`/數字/標點語義全變 |
+| 候選架構不相容 | `renderCandidates`/`selectAt`/`nextPage`/`selectAndCommit` 全讀 `client.candidates`。英文候選不進 `client` → 點選、數字鍵、翻頁**靜默失敗** |
+| `renderAll()` 會清掉 | 非 composing 且 `client.candidates` 為空時直接 `elCandidates.innerHTML = ''`，英文候選會在下一次 renderAll 被抹掉 |
+| 失焦丟失 | `ime.js:252` 只在 `imeEnabled` 時 flush。OFF 模式打一半切走視窗 → 字母沒進 textarea、`pendingCopyText` 是舊的、主程序複製**舊剪貼簿內容** |
 
-**可選延伸**：
-- 同時記錄到個人學習日誌（P1-5），記下「用戶今天看過 開发→development」
+### 5.1b 按鍵守衛順序 —— 攔截點選錯會吞掉整組快捷鍵
 
----
+**這是第二輪審查新發現，且是實作時最容易踩的坑。**
 
-### P1 — 學習支援（中收益，低成本）
+`handleKeyDown()` 現有守衛順序（`ime.js:421-437`）：
 
-#### P1-4：CEFR 詞彙等級標示
-
-**學習價值**：幫助學習者知道詞彙難度是否適合自己（A1 初級 → C2 專家級）。
-
-**實作**：
-- 載入 `levels-en.tsv` 建 Map（詞→CEFR等級）
-- 英文候選渲染時查表，顯示等級標籤
-
-**資料**：
-- `levels-en.tsv`：102KB，約 8,844 詞有 CEFR 等級
-  - A1: 1,083 / A2: 1,272 / B1: 2,174 / B2: 2,490 / C1: 929 / C2: 896
-
-**UI 設計**：
-- 英文候選格式：`[1] development [B2]  發展`
-- 等級標籤用小圓角標籤，顏色區分：
-  - A1/A2：綠色（基礎）
-  - B1/B2：藍色（中級）
-  - C1/C2：紫色（高級）
-  - 無等級：不顯示標籤
-
-**接入點**：
-- `renderer/ime.js`：`renderCandidates()` 查 `levelsMap`
-- `main.js`：新增 `levels:load` IPC
-- `preload.js`：新增 `loadLevels()` API
-
----
-
-#### P1-5：個人學習日誌（無 UI）
-
-**學習價值**：記錄用戶實際接觸過哪些英文詞，為未來 SRS（間隔複習）打基礎。
-
-**實作**：
-- JSON 檔案落盤（`%APPDATA%/floating-zhuyin/vocab-log.json`）
-- 記錄兩類事件：
-  1. **英文模式 commit**：用戶選了哪個英文詞 + 時間 + 次數
-  2. **中文 commit 時的英文曝光**：選了哪個中文詞 + 對應的英文譯詞 + 時間（P0-3 的 flash）
-
-**資料結構**：
-```json
-{
-  "words": {
-    "development": {
-      "firstSeen": "2026-10-08T10:30:00Z",
-      "lastSeen": "2026-10-08T14:20:00Z",
-      "seenCount": 5,
-      "committedCount": 2,
-      "source": "english_mode",
-      "cefr": "B2"
-    },
-    "开发": {
-      "lastEnglish": "development",
-      "lastSeen": "2026-10-08T11:00:00Z",
-      "seenCount": 3,
-      "source": "chinese_gloss"
-    }
-  },
-  "daily": {
-    "2026-10-08": {
-      "englishCommitted": 12,
-      "chineseWithGloss": 45,
-      "uniqueWords": 28
-    }
-  }
-}
+```js
+423  右 Shift 切換  → toggleIME() → return
+431  if (!imeEnabled) return;        ← 計劃要在這裡攔截字母
+434  if (!client || !client._initialized) return;
+435  if (resizing) return;
+436  if (evt.ctrlKey || evt.metaKey || evt.altKey) return;
+437  if (evt.isComposing) return;
 ```
 
-**接入點**：
-- `renderer/ime.js`：commit 時呼叫 `api.logVocabEvent()`
-- `main.js`：新增 `vocab:log` IPC，寫入 JSON 檔
-- `preload.js`：新增 `logVocabEvent()` API
+`!imeEnabled`（431）**早於** `resizing`（435）與修飾鍵檢查（436）。若照計劃在這裡攔截字母：
 
-**注意**：
-- 靜默記錄，不顯示任何 UI（不干擾當前使用）
-- 檔案大小控制：只記錄最近 90 天，定期清理
-- 為未來 P2-6（詞彙統計面板）和 SRS 功能準備資料
+- **會吞掉 `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Ctrl+A`** —— 修飾鍵檢查在後面，根本沒跑到
+- **拖拉視窗時會攔截字母** —— `resizing` 檢查也在後面
+
+**結論：英文攔截必須放在 436 的修飾鍵檢查之後**，或獨立成一個新的守衛段。
+
+### 5.1c 其餘新發現的狀態缺陷
+
+| # | 缺陷 | 位置 | 後果 |
+|---|---|---|---|
+| 1 | `toggleIME()` 只在 `compositionActive && candidates[0]` 時 commit | `ime.js:349` | ON→OFF 但候選為空時會直接 `Escape`，**已打的注音符號被丟棄** |
+| 2 | OFF→ON 完全沒有 flush 英文緩衝區 | `ime.js:354` 的 `if (!imeEnabled)` 只處理單向 | 右 Shift 切回 ON 後未 commit 的英文既沒插入也沒明確放棄 —— 這是「失焦不 flush」之外的**第二條遺失路徑** |
+| 3 | `resizing` 檢查在右 Shift 切換之後 | 切換在 423，`resizing` 在 435 | 拖拉視窗中按右 Shift 仍會切換 IME |
+| 4 | `window blur` 要求 `candidates[0]` 才 commit | `ime.js:252` | ON 狀態下 composing 但尚無候選時失焦，**composition 殘留**。不只是 OFF 緩衝區的問題 |
+| 5 | 英文候選不該沿用注音鍵盤映射 | `layout-mapper.js` 把 `KeyQ` 等字母鍵映射成注音符號 | OFF 英文管線不能走 `symbol = mapper.getSymbol(...)`。**計劃未指定英文該讀 `evt.key`、`evt.code` 還是另建映射** |
+
+### 5.1d 不成立的一項（已排除）
+
+第二輪審查主張「錄製模式的 listener（`ime.js:187`）比 `handleKeyDown`（218）先註冊且呼叫 `stopPropagation()`，所以錄製期間右 Shift 永遠進不到 `toggleIME()`」。
+
+**此說法不成立。**兩者都是 `document` 上的 capture listener，而 `stopPropagation()` **不會停止同一節點上的其他 listener**，只有 `stopImmediatePropagation()` 會。因此右 Shift 在錄製期間**仍然**會到達 `toggleIME()`。
+
+不過這仍揭示一個真實（但較輕）的問題：錄製快捷鍵時按右 Shift 會觸發 IME 切換，因為錄製 listener 對單獨的 Shift 是 `return` 忽略（`ime.js:201`），但 `handleKeyDown` 照跑。是否要刻意互斥，需在狀態機規格裡定義。
+
+### 5.1e OFF 英文輸入狀態機規格（**動工前必須先定案**）
+
+第二輪審查判定：「計劃只說把 `!imeEnabled` 分支改成攔截字母，但沒有定義狀態機本身」——**這是阻擋動工的唯一項目**。照現有文件實作，開發者必然要自行補規格，而補出來的方案很可能破壞 modifier 快捷鍵、共享候選狀態與原生 textarea 行為。
+
+以下為待定案的規格草案。
+
+#### 狀態
+
+| 狀態 | 含義 | 備註 |
+|---|---|---|
+| `IME_ON` | 注音組字中 | 現有 |
+| `IME_ON_IDLE` | 注音 ON 但未組字 | 現有 |
+| `EN_IDLE` | 注音 OFF 且英文緩衝區為空 | **現有行為，全部按鍵直通** |
+| `EN_COMPOSING` | 注音 OFF 且英文緩衝區非空 | **新增** |
+
+#### 核心原則：緩衝區為空 = 零攔截
+
+這是避免破壞原生行為的唯一辦法。**只有在緩衝區非空時才攔截任何按鍵。**
+
+```
+buffer === ""  →  handleKeyDown 直接 return，textarea 保持完全原生行為
+                   （Ctrl+C/V/A/X、方向鍵、Home/End 全部正常）
+buffer !== ""  →  進入英文組字語義
+```
+
+#### 緩衝區非空時的按鍵語義
+
+| 按鍵 | 行為 |
+|---|---|
+| `a`–`z` | 追加緩衝區，重算候選 |
+| `Space` | 有候選 → commit 目前選中的；無候選 → commit 原始緩衝區 + 空格 |
+| `Enter` | commit 原始緩衝區（不做候選轉換） |
+| `Backspace` | 刪緩衝區末字元；緩衝區變空則回到 `EN_IDLE` |
+| `Escape` | 丟棄緩衝區，回到 `EN_IDLE` |
+| `1`–`9` | commit 對應候選 |
+| `Shift+←/→` | 翻頁（沿用現有語義） |
+| `↑/↓` | 移動選取 |
+
+#### 離開 `EN_COMPOSING` 的四條路徑（**每一條都要 flush**）
+
+| 觸發 | 動作 |
+|---|---|
+| commit 完成 | 寫入 textarea，清緩衝區 |
+| 右 Shift 切回 ON | **先 flush 緩衝區到 textarea，再切換**（對應 5.1c #2） |
+| 視窗失焦 | **flush 緩衝區到 textarea**（對應 5.1 表格「失焦丟失」） |
+| ESC | 明確放棄，不寫入 |
+
+#### 候選儲存位置
+
+**不要塞進 `client.candidates`。**中文 engine 隨時會覆寫它（`oncandidateschange`）。
+
+獨立一個 `englishCandidates` 陣列，`renderCandidates()` 依當前狀態決定要渲染哪一份：
+
+```js
+var activeCandidates = imeEnabled ? client.candidates : englishCandidates;
+```
+
+同時必須改 `renderAll()` 的清除條件，否則英文候選會在下一次 renderAll 被抹掉（見 5.1 表格第 3 列）。
+
+#### 攔截點位置
+
+放在 `ime.js:436` 的修飾鍵檢查**之後**，不可放在 431（見 [5.1b](#51b-按鍵守衛順序--攔截點選錯會吞掉整組快捷鍵)）。
+
+### 5.2 資料欄位語義
+
+| 陷阱 | 數字 | 後果 |
+|---|---|---|
+| `english.tsv` 用第一欄建 Map | 11,229 行（11.87%）顯示詞 ≠ 編碼 | `African`、`AIDS` 這類查不到 |
+| `glossary-en` 多欄只取第二欄 | 9,872 條三欄 | 丟第二義項 |
+| `glossary-zh` 多欄只取第二欄 | 3,822 條（8.5%） | 丟義項；直接拼接會把 Tab 帶進 UI |
+
+### 5.3 死路徑與重複觸發
+
+- `api.onCopied` 監聽 `copied:ok`，但全專案**無人送這個事件** → 此回調永遠不觸發。這是現有 bug。
+- 若同時在 `onCompositionEnd()` 與 `selectAndCommit()` 加 flash，才會真的閃兩次。
+- `onCompositionEnd()` 按每次選字觸發（見 P0-3）。
+
+### 5.4 資料量與啟動
+
+TSV 解析與 Map 保留記憶體（Node 實測，兩輪獨立驗證一致）：
+
+| 資料集 | 條目 | 解析耗時 | **GC 後保留 heap** |
+|---|---|---|---|
+| `glossary-en.tsv` 全表 | 232,213 | 254ms | **29.72 MB** |
+| 自產 `glossary-en-TW.tsv` | ~65,970 | ~55ms | **9.35 MB** |
+| 工具詞庫 Map | 66,136 | 17.54ms | **3.3–5.8 MB**（GC 期間浮動） |
+
+> **修正記錄**：初版此處寫「heap 累積到 67.7MB」，那是四張表**累計且含暫存分配**的數字，不是單一資料集的保留量，屬**高估**。實測保留量為 29.72MB（全表）/ 9.35MB（TW 表）。
+
+**結論**：啟動卡頓不成立（254ms 無感）；記憶體成本也低於初估。離線預轉換後執行期只需 ~9.35MB，對常駐托盤工具可接受。
+
+計劃的 `Promise.all` 還需定義：單檔缺失是否繼續啟動、Map 為 `undefined` 時 `renderCandidates()` 怎麼避免炸到中文候選。
+
+### 5.5 簡繁一致性
+
+工具 UI 是 `lang="zh-Hant-TW"`、字型 `Microsoft JhengHei`。`glossary-zh.tsv` 的**值**是簡體（`the`→`这`、`from`→`从`、`we`→`我們`→`我们`）。
+
+P0-1 的英文候選旁會出現簡體中文釋義，與工具整體繁體風格不一致。**需決定**：原樣顯示、或 build 時把 `glossary-zh` 的值也過 `s2tw`。
+
+> 補充：青简自己的 `docs/plan/zh_tw_support_plan.md` 明列繁體支援三大痛點——讀音標準不同（台灣「垃圾」ㄌㄜˋㄙㄜˋ vs 大陸 lā jī）、詞彙習慣偏向大陸、簡轉繁一對多歧義（后/後、发/發/髮、干/乾/幹）。本計劃只碰繁→簡方向（比簡→繁安全，是多對一），但仍需統計歧義率。
 
 ---
 
-### P2 — 擴展（待評估）
-
-#### P2-6：設定面板加詞彙統計
-
-**學習價值**：可視化學習進度，提供動機。
-
-**實作**：
-- 設定面板新增「詞彙統計」區塊
-- 顯示：
-  - 今天接觸過多少英文詞
-  - 按 CEFR 等級分佈（圓餅圖或長條圖）
-  - 累計學習詞數
-
-**資料來源**：P1-5 的個人學習日誌
-
-**UI 設計**：
-- 設定面板底部加一個可收合的區塊
-- 簡單數字 + 分佈條，不需要複雜圖表庫
-
----
-
-#### P2-7：中英混輸（注音 ON 時打英文字母也出英文候選）
-
-**學習價值**：便利性 > 學習價值。注音 ON 時打 `database` 仍能出英文候選，不用切模式。
-
-**成本**：
-- 需要判斷「這段注音符號序列像不像合法注音」
-- 青簡靠拼音切分器 + `unlikely_pinyin()` 判定
-- 注音工具需要自建「不像話」判定（符號序列切不出合法注音組合）
-
-**評估**：
-- 右 Shift 切換已經能處理模式切換
-- 混輸的邊界情況多（`taida` 是「太大」還是「他 + Ida」？）
-- 學習收益低（用戶切模式時已經是主動行為）
-
-**結論**：**延後**。等 P0/P1 上線後評估實際需求。
-
----
-
-## 明確不建議做的
+## 6. 明確不建議做的
 
 | 功能 | 不做的理由 |
 |---|---|
-| **拼音頭 + 英文尾切分** | 需要整套拼音語言模型（`static_score`/`penalty`/`segment()`），工作量接近重寫引擎。青簡的英文能力最深的部分，但對浮動注音小工具來說 ROI 極低。 |
-| **雲端釋義兜底** | 工具定位是「完全離線、免安裝」。加網路請求破壞核心價值。 |
-| **`.qj` mmap 容器** | 94k 詞在 JS Map 夠快，不需要二進制容器。Electron 啟動時解析 2MB TSV 可接受。 |
-| **日文/西文詞表** | 目標是學英文，不是多語言。glossary-ja/es.tsv 不引入。 |
+| **拼音頭 + 英文尾切分** | 需要整套拼音語言模型（`static_score`/`penalty`/`segment()`），工作量接近重寫引擎。青简英文能力最深的部分，但對浮動注音小工具 ROI 極低 |
+| **雲端釋義兜底** | 工具定位是「完全離線、免安裝」。加網路請求破壞核心價值 |
+| **`.qj` mmap 容器** | 94k 詞在 JS Map 夠快，不需要二進制容器 |
+| **runtime OpenCC 轉換** | 離線預轉換已足夠，執行期不該背 mmseg 分詞 |
+| **日文/西文詞表** | 目標是學英文，不是多語言 |
+| **直接移植 `suggest()` 的全掃版本** | 會跑在 keydown 主執行緒，見 [P0-1 性能](#p0-1英文模式候選--中文釋義線a) |
 
 ---
 
-## 設計原則（借鑑青簡）
+## 7. 實作順序
 
-1. **策略判斷用靜態模型，不歸個人頻次管**
-   - 「用哪種輸入方式」（中文/英文）的判斷不該被個人歷史綁架
-   - 本工具：右 Shift 切換是明確的模式切換，不需要動態判斷
+1. **build 腳本** — `tw2sp` 轉換產 `glossary-en-TW.tsv`，並統計一對多歧義率
+2. **人工抽查 100 筆** — 確認翻譯正確性，門檻 ≥ 95%
+3. **P0-1 的架構前置** — 先定義 OFF 英文輸入狀態機與候選提交通道（見 [5.1](#51-off-英文模式沒有獨立輸入狀態機)）
+4. **P0-1** — 英文候選管線
+5. **P0-2** — 中文候選掛譯詞（資料已就緒）
+6. **P0-3** — flash 擴展（需先解決 UI 溢出與觸發時機）
+7. **P1-4** — CEFR 標示
+8. **P1-5** — 學習日誌
+9. **P2-6 / P2-7** — 視實際需求
 
-2. **釋義查不到留空，不影響主流程**
-   - glossary 查不到時，候選正常顯示，只是沒有譯詞
-   - 不拋錯、不阻塞、不改變候選排序
-
-3. **個人詞表排除在「整段是英文詞」判定外**
-   - 青簡的防死循環設計：個人詞表不算「整段是英文詞」，否則打不出來的拼音會被學成英文詞
-   - 本工具：個人學習日誌只記錄，不影響候選產生（純粹的 log，不是詞表）
-
----
-
-## 資產清單
-
-| 檔案 | 條目數 | 大小 | 用途 |
-|---|---|---|---|
-| `example/qingjian-main/assets/lexicon/english.tsv` | 94,568 | 2.2MB | P0-1 英文詞表 |
-| `example/qingjian-main/assets/glossary/glossary-zh.tsv` | 44,924 | ~1MB | P0-1 英→中釋義 |
-| `example/qingjian-main/assets/glossary/glossary-en.tsv` | 232,213 | 6.5MB | P0-2/P0-3 中→英釋義 |
-| `example/qingjian-main/assets/levels/levels-en.tsv` | ~8,844 | 102KB | P1-4 CEFR 等級 |
-
-**資料複製**：實作時複製到 `desktop/data/` 下，與 `database.data` 並列。
+> 第 1、2 步是 P0-2 的前置，第 3 步是 P0-1 的前置。兩者可並行。
 
 ---
 
-## 接入點總覽
+## 8. 接入點總覽
 
 ### main.js
 
-| IPC Channel | 用途 | 對應 Feature |
+| IPC Channel | 用途 | Feature |
 |---|---|---|
-| `english:load` | 載入 english.tsv + glossary-zh.tsv | P0-1 |
-| `glossaryEn:load` | 載入 glossary-en.tsv | P0-2, P0-3 |
-| `levels:load` | 載入 levels-en.tsv | P1-4 |
-| `vocab:log` | 寫入個人學習日誌 JSON | P1-5 |
-| `vocab:stats` | 讀取統計資料（給 P2-6） | P2-6 |
+| `english:load` | 載入 `english.tsv` + `glossary-zh.tsv` | P0-1 |
+| `glossaryEn:load` | 載入 `glossary-en-TW.tsv` | P0-2, P0-3 |
+| `levels:load` | 載入 `levels-en.tsv` | P1-4 |
+| `vocab:log` | 寫入學習日誌 JSON | P1-5 |
+| `vocab:stats` | 讀取統計 | P2-6 |
 
 ### preload.js
 
-| API | 對應 IPC | 對應 Feature |
-|---|---|---|
-| `loadEnglish()` | `english:load` | P0-1 |
-| `loadGlossaryEn()` | `glossaryEn:load` | P0-2, P0-3 |
-| `loadLevels()` | `levels:load` | P1-4 |
-| `logVocabEvent(event)` | `vocab:log` | P1-5 |
-| `getVocabStats()` | `vocab:stats` | P2-6 |
+| API | Feature |
+|---|---|
+| `loadEnglish()` | P0-1 |
+| `loadGlossaryEn()` | P0-2, P0-3 |
+| `loadLevels()` | P1-4 |
+| `logVocabEvent(event)` | P1-5 |
+| `getVocabStats()` | P2-6 |
 
 ### renderer/ime.js
 
-| 函式 | 修改內容 | 對應 Feature |
+| 函式 | 修改內容 | Feature |
 |---|---|---|
-| `handleKeyDown` | `!imeEnabled` 分支 → 攔截字母鍵走英文候選 | P0-1 |
-| `renderCandidates` | 英文候選渲染 + 中文釋義 + CEFR 標籤 | P0-1, P1-4 |
+| `handleKeyDown` | `!imeEnabled` 分支 → 攔截字母（**需先定義狀態機**） | P0-1 |
+| `renderCandidates` | 英文候選 + 中文釋義 + CEFR 標籤 | P0-1, P1-4 |
 | `renderCandidates` | 中文候選第一項顯示英文譯詞 | P0-2 |
-| `onCompositionEnd` / `selectAndCommit` | 查 glossary → flashCopied 顯示英文 | P0-3 |
-| `flashCopied(text?)` | 接受參數，顯示中英對照 | P0-3 |
-| `init` | 載入英文資料（Promise.all） | 全部 |
-| commit 相關 | 記錄到 vocab log | P1-5 |
+| `renderAll` | **不得清掉英文候選** | P0-1 |
+| `onCompositionEnd` | 查 glossary → 傳入 `flashCopied` | P0-3 |
+| `flashCopied(text?)` | 接受參數，**顯式設定 `textContent`** | P0-3 |
+| blur handler | **OFF 模式也要 flush 英文緩衝區** | P0-1 |
+| `init` | `Promise.all` 載入 + 降級邊界 | 全部 |
+| commit 相關 | 記錄 vocab log | P1-5 |
 
 ### renderer/index.html
 
-| 元素 | 修改內容 | 對應 Feature |
+| 元素 | 修改 | Feature |
 |---|---|---|
-| `.candidate-item` | 加子元素：`.candidate-gloss`（中文釋義）+ `.candidate-level`（CEFR 標籤） | P0-1, P1-4 |
-| `.copy-flash` | 內容可含中英對照，調整字級 | P0-3 |
-| `.settings-panel` | （P2-6）加詞彙統計區塊 | P2-6 |
+| `.candidate-item` | 加 `.candidate-gloss` + `.candidate-level` | P0-1, P1-4 |
+| `.copy-flash` | 可含中英對照，**調整字級與 `white-space`** | P0-3 |
+| `.settings-panel` | 詞彙統計區塊 | P2-6 |
 
----
+### 需一併修正的現有 bug
 
-## 實作順序建議
-
-1. **P0-1**（英文模式候選 + 中文釋義）— 核心功能，先建立英文候選管線
-2. **P0-2**（中文候選掛英文譯詞）— 與 P0-1 共用 glossary 載入邏輯
-3. **P0-3**（送出時閃示英文）— 擴展現有 flashCopied，成本極低
-4. **P1-4**（CEFR 標示）— 加在 P0-1 的英文候選渲染上
-5. **P1-5**（學習日誌）— 純後端，不影響 UI
-6. **P2-6**（詞彙統計）— 依 P1-5 資料做可視化
-7. **P2-7**（混輸）— 視實際需求決定
-
----
-
-## Codex 審查紀錄
-
-**審查時間**：2026-10-08  
-**審查方式**：`codex exec -c model_reasoning_effort=high`  
-**結果**：Codex 反覆要求 TODO Markdown 路徑確認，未提供實質分析（3 次嘗試均被路徑確認阻擋）。
-
-**處理**：基於已完成的充分研究（`青简英文查字典分析.md` 全文 + desktop 專案核心檔案 `main.js`/`ime.js`/`preload.js`/`index.html` + 資料資產覆蓋率確認）直接產出本文件。
-
-**自我審查重點**：
-- ✅ 線A（主動練習）優先於線B（被動曝光）— 符合記憶形成原理
-- ✅ flashCopied 擴展是最高 ROI 的融入點 — 不改工作流，只改提示文字
-- ✅ 不建議做拼音頭+英文尾 — 需要引擎級能力，ROI 極低
-- ✅ 個人學習日誌靜默運作 — 不干擾當前使用，為未來 SRS 準備資料
-- ⚠️ glossary-en.tsv 6.5MB 啟動解析耗時 — 可能需要 worker thread 或延遲載入
-- ⚠️ 中文候選只在第一項顯示英文 — 可能錯過其他候選的英文接觸，但避免 UI 變寬
-
----
-
-## 附：關鍵常數（借鑑青簡）
-
-| 常數 | 值 | 用途 |
+| Bug | 位置 | 修法 |
 |---|---|---|
-| `MIN_COMPLETION_LETTERS` | 3 | 至少 3 字母才出英文前綴補全 |
-| `MIN_CORRECTION_LETTERS` | 4 | 至少 4 字母才做拼錯糾正 |
-| `ENGLISH_MODE_CANDIDATES` | 18 | 英文模式最多候選數（可調） |
-| `PAGE_SIZE` | 9 | 候選分頁大小（現有，不變） |
-| `FLASH_DURATION` | 1400ms | 複製閃示時間（現有，可延長至 2000ms） |
+| `copied:ok` 無人送 | `preload.js:53` / `main.js:389` | main 端 `clipboard.writeText` 後送 `copied:ok`，或 preload 改聽 `copied:notify` |
+
+---
+
+## 9. 參考檔案索引
+
+### 英文詞表（線 A）
+
+| 檔案 | 行數 | 內容 |
+|---|---|---|
+| `crates/qingjian-dictionary/src/word_list.rs` | 143 | `WordList` 資料結構 |
+| `crates/qingjian-core/src/english/mod.rs` | ~120 | `suggest()` 三段式候選 |
+| `crates/qingjian-core/src/english/edit.rs` | ~90 | `within_one_edit()` 編輯距離 |
+| `crates/qingjian-core/src/engine/extras.rs` | ~170 | `insert_english()` 混輸候選 |
+| `crates/qingjian-core/src/engine/query/english_tail.rs` | 174 | 拼音頭 + 英文尾切分與比分 |
+| `crates/qingjian-core/src/engine/query/modes.rs` | 169 | `query_english()` 英文模式入口 |
+| `tools/dict-convert/src/english.rs` | ~130 | 詞表加工器 |
+
+### 釋義表（線 B）
+
+| 檔案 | 行數 | 內容 |
+|---|---|---|
+| `crates/qingjian-translate/src/glossary/mod.rs` | 391 | TSV 解析 + `.qj` 讀寫 |
+| `crates/qingjian-translate/src/layered_translator.rs` | 55 | 個人表 + 隨包表分層 |
+| `crates/qingjian-core/src/engine/translator.rs` | ~30 | `Translator` trait 定義 |
+| `crates/qingjian-core/src/engine/commit/mod.rs` | — | `annotate()` 掛譯詞 |
+| `crates/qingjian-core/src/engine/gloss/mod.rs` | — | 雲端釋義兜底 |
+
+### 繁簡轉換
+
+| 檔案 | 內容 |
+|---|---|
+| `opencc-v1.4.2-resources/tw2sp.json` | 轉換鏈定義 |
+| `opencc-v1.4.2-resources/TWPhrasesRev.txt` | 台灣詞 → 通用詞（810 條，含 `程式→程序`） |
+| `opencc-v1.4.2-resources/TWVariantsRevPhrases.txt` | 台灣用字詞組（1,128） |
+| `opencc-v1.4.2-resources/TWVariantsRev.txt` | 台灣用字（41） |
+| `opencc-v1.4.2-resources/TSPhrases.txt` | 繁體詞 → 簡體詞（477） |
+| `opencc-v1.4.2-resources/TSCharactersExt.txt` | 繁體字 → 簡體字擴展（895） |
+| `opencc-v1.4.2-resources/TSCharacters.txt` | 繁體字 → 簡體字（4,148） |
+| `qingjian-main/docs/plan/zh_tw_support_plan.md` | 青简繁體支援痛點分析 |
+
+### 工具側
+
+| 檔案 | 內容 |
+|---|---|
+| `desktop/main.js` | 視窗、托盤、熱鍵、IPC、blur 複製 |
+| `desktop/renderer/ime.js` | 應用邏輯（組字、候選、設定、自動撐開） |
+| `desktop/renderer/lib/ime-client.js` | JSZhuyin 引擎客戶端 |
+| `desktop/renderer/lib/layout-mapper.js` | 物理鍵 → 注音符號映射 |
+| `desktop/renderer/lib/jszhuyin_data_pack.js` | 詞庫封包格式（Uint16 存字串） |
+
+### 關鍵常數
+
+| 常數 | 值 | 位置 | 用途 |
+|---|---|---|---|
+| `MIN_CORRECTION_LETTERS` | 4 | `english/mod.rs` | 至少幾個字母才做拼錯糾正 |
+| `MIN_COMPLETION_LETTERS` | 3 | `engine/mod.rs` | 至少幾個字母才出英文補全 |
+| `ENGLISH_COMPLETIONS` | 3 | `engine/mod.rs` | 混輸時最多出幾條英文補全 |
+| `ENGLISH_MODE_CANDIDATES` | 18 | `engine/mod.rs` | 英文模式最多候選數 |
+| `ENGLISH_SWITCH_PENALTY` | 3.0 | `engine/mod.rs` | 切到英文的固定代價 |
+| `ENGLISH_ZIPF_FLOOR` | 3.0 | `engine/mod.rs` | 無詞頻時的 Zipf 兜底值 |
+| `PAGE_SIZE` | 9 | `ime.js:19` | 候選分頁大小（現有） |
+| `WIN_WIDTH` | 320 | `main.js:19` | 視窗寬（硬約束） |
+| `FLASH_DURATION` | 1400ms | `ime.js:518` | 複製閃示時間（可延長至 2000ms） |
+
+---
+
+## 10. 審查紀錄
+
+### 第一輪（2026-10-08）
+
+Codex 三度要求路徑確認，未提供實質分析。該版計劃**未經第二意見**。
+
+### 第二輪（2026-10-10）
+
+人工查證 + Codex 對原計劃攻擊。發現並確認：
+
+| 編號 | 發現 | 判定 |
+|---|---|---|
+| 1 | `glossary-en.tsv` 簡體鍵 vs 工具繁體詞庫，交集僅 18.6%，高頻詞全漏 | **真**，導致 P0-2 當時改判不可行 |
+| 2 | OFF 模式攔截破壞唯一英文直通路徑 | **真** |
+| 3 | 英文候選接不進 `client.candidates` 架構，且會被 `renderAll()` 清掉 | **真** |
+| 4 | 失焦不 flush OFF 緩衝區，複製舊剪貼簿 | **真** |
+| 5 | 320px 標題列裝不下中英對照 | **真** |
+| 6 | `api.onCopied` 監聽 `copied:ok` 但全專案無人送此事件 | **真**，現有 bug |
+| 7 | `english.tsv` 用第一欄建 Map 會漏 11.87% | **真**（實測 11,229 行） |
+| 8 | CEFR「可見度極低」 | **反證成立**——Top100 99%、Top1000 80.5%，已修正 |
+| 9 | `onCompositionEnd` 按每次選字觸發，非整詞完成 | **真** |
+
+### 第三輪（2026-10-17）
+
+引入 OpenCC 1.4.2，重測 P0-2 並改判為可行。合併兩份文件後由 Codex 攻擊新版。
+
+**Codex 狀態**：跑 67 次工具呼叫、產出 400KB 日誌後，逾 20 分鐘背景時限被終止，**未產出最終結論**。按既定規則不重試，改由人工從日誌提取其實測數據並自行補完審查。
+
+**從日誌提取的實測**：
+
+| 項目 | 數值 | 對本計劃的影響 |
+|---|---|---|
+| 獨立覆核整體覆蓋率 | 44.59% | 與本方 43.8% 一致 |
+| 獨立覆核 Top100 | 93.0% | **與本方完全吻合** |
+| `glossary-en` 全表保留 heap | 29.72MB | **推翻本方原寫的 67.7MB**（見 [5.4](#54-資料量與啟動)） |
+| TW 表保留 heap | 9.35MB | 支持離線預轉換方案 |
+| 工具詞庫詞長分佈 | 1字 14,318 / 2字 74,601 / 3字 33,541 / 4字 26,564 | 雙字詞佔 50% |
+
+**本方自行補做的審查**（Codex 未及回答的問題）：
+
+- **台灣專屬詞彙**：實測 29/36 = 81% 命中，轉換正確（`腳踏車→自行车`、`滑鼠→鼠标`、`計程車→出租车`）。缺口集中在台灣飲食與機構詞（`悠遊卡`、`超商`、`麵線`），有界不散佈 → 見 [3.5b](#35b-兩輪獨立驗證含反駁與收斂)
+- **詞頻 proxy 可靠性**：`tw2sp` 先轉換再查頻，`軟體→软件` 會取到 `软件` 的高頻，所以台灣詞只要存在對應大陸用詞就會被正確計頻。真正會被低估的只有無對應者，與上面同一類
+- **貪婪最長匹配近似風險**：雙字詞佔 50%，而片語表條目多為雙字以上，整詞轉換時最長匹配與 mmseg 分段結果高度重合。正式 build 仍應對照 OpenCC CLI
+
+**收斂結論**：P0-2 維持可行，覆蓋率與記憶體數字以第三輪實測為準。動工前置條件未變——見 [第 7 章實作順序](#7-實作順序)。
