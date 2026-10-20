@@ -1,0 +1,13 @@
+{
+  "name": "floating-zhuyin",
+  "version": "1.0.0",
+  "description": "浮動注音輸入小工具 — 免安裝、離線、打完自動複製",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^32.2.7"
+  }
+}
